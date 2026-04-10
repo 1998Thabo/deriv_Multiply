@@ -1,126 +1,63 @@
-# Deriv Tick Data Collector
+# Deriv AI Trading System v2
 
-Collects historical tick data from the Deriv WebSocket API for Volatility indices (R_10, R_25, R_50, R_75, R_100) and saves it to CSV files.
+## Quick Start
 
----
-
-## Project Structure
-
-```
-deriv_collector/
-├── data_collector.py   ← Main script
-├── requirements.txt    ← Python dependencies
-├── collector.log       ← Auto-created when script runs
-└── data/               ← Auto-created; one CSV per symbol
-    ├── R_10.csv
-    ├── R_25.csv
-    ├── R_50.csv
-    ├── R_75.csv
-    └── R_100.csv
-```
-
----
-
-## Setup
-
-### 1. Python version
-Requires **Python 3.11+** (uses `list[dict] | None` type hint syntax).
-
-### 2. Create a virtual environment (recommended)
 ```bash
-python -m venv venv
-source venv/bin/activate        # macOS / Linux
-venv\Scripts\activate           # Windows
-```
-
-### 3. Install dependencies
-```bash
+# 1. Install dependencies
 pip install -r requirements.txt
+
+# 2. Set your API token in config.py
+#    API_TOKEN = "your_demo_token_here"
+#    Get it from: app.deriv.com/account/api-token (Read + Trade scope)
+
+# 3. Collect data (run overnight for best results)
+python run.py collect
+
+# 4. Process into features
+python run.py pipeline
+
+# 5. Run backtests (rule-based)
+python run.py backtest
+
+# 6. Train XGBoost models
+python run.py train
+
+# 7. Start live demo trading
+python run.py trade
 ```
 
----
+## Key Fixes from v1
 
-## Running the Collector
+| Issue | v1 | v2 |
+|-------|----|----|
+| CSV crashes on R_10/R_50/R_75/R_100 | C parser crashes on malformed rows | python engine + on_bad_lines='skip' |
+| Doubled-year timestamps (2026-2026-...) | Crash | Auto-repaired |
+| Data dropped on bad prices | Drop entire row | Forward-fill price |
+| Trade placement fails | Wrong parameters format | Fixed limit_order structure |
+| WebSocket crashes every 5 min | Single recv loop | Background loop with req_id routing |
+| Mean reversion losing money | Signal direction inverted | Fixed: z<0 → BUY, z>0 → SELL |
+| Model saves as _lgbm.pkl | Wrong filename | Saves as _xgb.pkl |
+| No transaction costs | Ignoring spread | 0.1% spread included |
+| Model AUC < 0.55 still saved | Always saves | Rejects + warns if AUC < 0.55 |
+| tick_index_norm leakage | Included | Removed |
+| Normalisation applied | Yes | No (trees don't need it) |
 
-```bash
-python data_collector.py
-```
-
-The script will:
-- Connect to `wss://ws.derivws.com/websockets/v3`
-- Collect all 5 symbols **concurrently** (parallel WebSocket connections)
-- Fetch 5,000 ticks per batch
-- Append data to `data/<SYMBOL>.csv`
-- Reconnect automatically if the connection drops
-- Stop when each symbol reaches the configured tick target
-
----
-
-## Configuration
-
-All settings are at the top of `data_collector.py`:
-
-| Variable | Default | Description |
-|---|---|---|
-| `TICKS_PER_BATCH` | `5000` | Ticks fetched per API call |
-| `BATCH_DELAY_SECONDS` | `1.5` | Pause between batches (rate limit safety) |
-| `RECONNECT_DELAY_SECONDS` | `5` | Base wait before reconnecting |
-| `MAX_RECONNECT_ATTEMPTS` | `10` | Max retries per symbol before giving up |
-| `DATA_DIR` | `data/` | Output folder |
-| `target_ticks` (in `main()`) | `50_000` | Set to `0` to run indefinitely |
-
-### Run indefinitely (build a large dataset over time)
-In `data_collector.py`, find `main()` and change:
-```python
-target_ticks = 0   # 0 = run forever
-```
-
-Then run it as a background process:
-```bash
-# Linux / macOS
-nohup python data_collector.py &
-
-# Windows (PowerShell)
-Start-Process python -ArgumentList "data_collector.py" -NoNewWindow
-```
-
----
-
-## Output Format
-
-Each CSV file has 3 columns:
+## File Structure
 
 ```
-timestamp,price,symbol
-2024-01-15T08:30:00+00:00,1234.56,R_50
-2024-01-15T08:30:01+00:00,1234.61,R_50
-...
+deriv_trading_bot/
+├── config.py        All settings
+├── features.py      Shared feature calc (pipeline + live)
+├── pipeline.py      Data loading + feature engineering
+├── backtest.py      Tick-by-tick simulation
+├── model.py         XGBoost training + validation
+├── trader.py        Live WebSocket trading bot
+├── collector.py     Tick data collection
+├── run.py           Entry point
+├── requirements.txt
+├── data/            Raw tick CSVs
+├── processed/       Feature CSVs
+├── models/          Trained models (*_xgb.pkl)
+├── results/         Trade logs and summaries
+└── logs/            System logs
 ```
-
-- `timestamp` — ISO 8601 UTC
-- `price` — tick price (float)
-- `symbol` — Deriv symbol name
-
----
-
-## Logs
-
-- Console output (live)
-- `collector.log` file (persisted)
-
-Sample output:
-```
-2024-01-15 08:30:00  [INFO    ]  ▶  R_50 | existing rows: 0
-2024-01-15 08:30:00  [INFO    ]  Connecting WebSocket for R_50 …
-2024-01-15 08:30:01  [INFO    ]  Connected for R_50
-2024-01-15 08:30:02  [INFO    ]    R_50 | batch: +5000 ticks  |  total stored: 5000
-```
-
----
-
-## Notes
-
-- The Deriv API does **not** require authentication for `ticks_history` on synthetic indices.
-- Each batch request returns the latest N ticks — overlapping ticks between batches are possible. For deduplication in Phase 2, sort by timestamp and drop duplicates.
-- The API rate-limits aggressive polling; `BATCH_DELAY_SECONDS = 1.5` is safe.
-- No trading logic is implemented here — this is data collection only.
